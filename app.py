@@ -11,26 +11,13 @@ the Pitt Corpus (Cookie Theft / Verbal Fluency / Sentence Construction tasks).
                      which needs text (768-d) + speech (768-d) + acoustic (47-d)
                      features together.
 
-IMPORTANT — acoustic features: the code that extracts the 47-dim acoustic
-feature vector from a raw audio file was not included in the project files
-(only the trained norm stats and the trained model checkpoint were). So the
-"Text + Speech" tab CANNOT call the real fusion model directly from raw
-audio — instead:
-  - By default it falls back to a simple average of the independently-trained
-    text-only and speech-only models (an approximation, not the real fusion
-    model).
-  - If you separately have a precomputed acoustic-features `.pt` file for a
-    sample (a 47-length vector, e.g. produced by whatever tool built the
-    original dataset), you can upload it in the "Advanced" section to run the
-    real trained fusion model end-to-end.
-
-Because the exact pooling/tokenization used to build the original training
-text/speech embeddings isn't recorded in the project files either, live
-text/speech predictions are best-effort — accuracy may differ from the
-reported test-set numbers (92.14% text-only, 80.71% speech-only) if the
-original pipeline pooled differently (e.g. CLS token instead of mean pooling).
+NOTE ON MEMORY: all heavy models (BERT, Wav2Vec2, and the three trained
+checkpoints) are LAZY-LOADED — only loaded into memory the first time
+they're actually needed, not all at once at startup. This matters on
+low-RAM hosts (e.g. Railway free tier, 1GB limit).
 """
 
+import os
 import torch
 import torch.nn.functional as F
 import gradio as gr
@@ -45,89 +32,106 @@ from src.model import UnimodalClassifier, MultimodalSiameseNetwork
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+LABELS = {0: "Control (no dementia signal)", 1: "Dementia signal detected"}
+DECISION_THRESHOLD = 0.4
+
 # ---------------------------------------------------------------------------
-# Load normalization stats (computed on training split only)
+# Lazy-loaded globals — nothing heavy is loaded at import/startup time.
 # ---------------------------------------------------------------------------
-norm_stats = torch.load("preprocessing_config/norm_stats.pt", map_location="cpu", weights_only=False)
+_norm_stats = None
+_text_model = None
+_speech_model = None
+_fusion_model = None
+_bert_tokenizer = None
+_bert_model = None
+_wav2vec_processor = None
+_wav2vec_model = None
+
+
+def get_norm_stats():
+    global _norm_stats
+    if _norm_stats is None:
+        _norm_stats = torch.load(
+            "preprocessing_config/norm_stats.pt", map_location="cpu", weights_only=False
+        )
+    return _norm_stats
 
 
 def normalize(x, mean_key, std_key):
-    mean = norm_stats[mean_key]
-    std = norm_stats[std_key]
+    stats = get_norm_stats()
+    mean = stats[mean_key]
+    std = stats[std_key]
     return (x - mean) / std
 
 
-# ---------------------------------------------------------------------------
-# Load classifiers
-# ---------------------------------------------------------------------------
-text_model = UnimodalClassifier(input_dim=768).to(DEVICE)
-text_model.load_state_dict(torch.load("models/best_model_text.pth", map_location=DEVICE))
-text_model.eval()
-
-speech_model = UnimodalClassifier(input_dim=768).to(DEVICE)
-speech_model.load_state_dict(torch.load("models/best_model_speech.pth", map_location=DEVICE))
-speech_model.eval()
-
-# Real trained fusion model (text + speech + acoustic), reported 91.43% accuracy.
-# Needs a 47-dim acoustic feature vector we can't compute live from raw audio
-# (see module docstring) -- only usable via the "Advanced" acoustic upload.
-fusion_model = MultimodalSiameseNetwork().to(DEVICE)
-fusion_model.load_state_dict(torch.load("models/best_model_fusion.pth", map_location=DEVICE))
-fusion_model.eval()
-
-# ---------------------------------------------------------------------------
-# Load embedding backbones (lazy globals, loaded once at startup)
-# ---------------------------------------------------------------------------
-bert_tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
-bert_model = BertModel.from_pretrained("bert-base-uncased").to(DEVICE)
-bert_model.eval()
-
-wav2vec_processor = Wav2Vec2Processor.from_pretrained("facebook/wav2vec2-base-960h")
-wav2vec_model = Wav2Vec2Model.from_pretrained("facebook/wav2vec2-base-960h").to(DEVICE)
-wav2vec_model.eval()
+def get_text_model():
+    global _text_model
+    if _text_model is None:
+        _text_model = UnimodalClassifier(input_dim=768).to(DEVICE)
+        _text_model.load_state_dict(torch.load("models/best_model_text.pth", map_location=DEVICE))
+        _text_model.eval()
+    return _text_model
 
 
-LABELS = {0: "Control (no dementia signal)", 1: "Dementia signal detected"}
+def get_speech_model():
+    global _speech_model
+    if _speech_model is None:
+        _speech_model = UnimodalClassifier(input_dim=768).to(DEVICE)
+        _speech_model.load_state_dict(torch.load("models/best_model_speech.pth", map_location=DEVICE))
+        _speech_model.eval()
+    return _speech_model
 
-# The training/ablation script (ablation.py) evaluated and reported the
-# checkpoints' accuracy (92.14% text, 80.71% speech, 91.43% fusion) using
-# decision threshold 0.4, NOT the default 0.5:
-#   def evaluate(model, loader, modality, device, threshold=0.4): ...
-# Using 0.5 here would silently disagree with how these models were tuned
-# and evaluated, so we match that threshold at inference time too.
-DECISION_THRESHOLD = 0.4
+
+def get_fusion_model():
+    global _fusion_model
+    if _fusion_model is None:
+        _fusion_model = MultimodalSiameseNetwork().to(DEVICE)
+        _fusion_model.load_state_dict(torch.load("models/best_model_fusion.pth", map_location=DEVICE))
+        _fusion_model.eval()
+    return _fusion_model
+
+
+def get_bert():
+    global _bert_tokenizer, _bert_model
+    if _bert_model is None:
+        _bert_tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
+        _bert_model = BertModel.from_pretrained("bert-base-uncased").to(DEVICE)
+        _bert_model.eval()
+    return _bert_tokenizer, _bert_model
+
+
+def get_wav2vec():
+    global _wav2vec_processor, _wav2vec_model
+    if _wav2vec_model is None:
+        _wav2vec_processor = Wav2Vec2Processor.from_pretrained("facebook/wav2vec2-base-960h")
+        _wav2vec_model = Wav2Vec2Model.from_pretrained("facebook/wav2vec2-base-960h").to(DEVICE)
+        _wav2vec_model.eval()
+    return _wav2vec_processor, _wav2vec_model
 
 
 def get_text_embedding(transcript: str, pooling_method: str = "mean"):
-    """
-    Returns the normalized 768-dim text embedding tensor (on DEVICE, batch dim=1).
-    pooling_method:
-      - "mean"   : mean-pool the last hidden state over tokens
-      - "cls"    : raw [CLS] token from the last hidden state
-      - "pooler" : BERT's pooler_output (CLS token passed through a dense+tanh
-                   layer) -- what many pipelines mean by "the BERT embedding"
-    """
+    bert_tokenizer, bert_model = get_bert()
     with torch.no_grad():
         tokens = bert_tokenizer(
             transcript, return_tensors="pt", truncation=True, padding=True, max_length=512
         ).to(DEVICE)
         outputs = bert_model(**tokens)
         if pooling_method == "cls":
-            embedding = outputs.last_hidden_state[:, 0, :].squeeze(0).cpu()  # raw [CLS] -> [768]
+            embedding = outputs.last_hidden_state[:, 0, :].squeeze(0).cpu()
         elif pooling_method == "pooler":
-            embedding = outputs.pooler_output.squeeze(0).cpu()  # dense+tanh over CLS -> [768]
+            embedding = outputs.pooler_output.squeeze(0).cpu()
         else:
-            embedding = outputs.last_hidden_state.mean(dim=1).squeeze(0).cpu()  # mean-pooled -> [768]
+            embedding = outputs.last_hidden_state.mean(dim=1).squeeze(0).cpu()
         return normalize(embedding, "text_mean", "text_std").unsqueeze(0).to(DEVICE)
 
 
 def get_speech_embedding(audio_path: str):
-    """Returns the normalized 768-dim speech embedding tensor (on DEVICE, batch dim=1)."""
+    wav2vec_processor, wav2vec_model = get_wav2vec()
     with torch.no_grad():
         speech_array, _ = librosa.load(audio_path, sr=16000)
         inputs = wav2vec_processor(speech_array, sampling_rate=16000, return_tensors="pt").to(DEVICE)
-        hidden = wav2vec_model(**inputs).last_hidden_state  # [1, T, 768]
-        embedding = hidden.mean(dim=1).squeeze(0).cpu()  # mean-pooled -> [768]
+        hidden = wav2vec_model(**inputs).last_hidden_state
+        embedding = hidden.mean(dim=1).squeeze(0).cpu()
         return normalize(embedding, "speech_mean", "speech_std").unsqueeze(0).to(DEVICE)
 
 
@@ -137,7 +141,7 @@ def predict_text(transcript: str):
 
     with torch.no_grad():
         embedding = get_text_embedding(transcript, pooling_method="mean")
-        logit = text_model(embedding)
+        logit = get_text_model()(embedding)
         prob = torch.sigmoid(logit).item()
 
     pred = int(prob > DECISION_THRESHOLD)
@@ -150,7 +154,7 @@ def predict_speech(audio_path: str):
 
     with torch.no_grad():
         embedding = get_speech_embedding(audio_path)
-        logit = speech_model(embedding)
+        logit = get_speech_model()(embedding)
         prob = torch.sigmoid(logit).item()
 
     pred = int(prob > DECISION_THRESHOLD)
@@ -158,13 +162,6 @@ def predict_speech(audio_path: str):
 
 
 def predict_fusion(transcript: str, audio_path: str, acoustic_pt_path: str):
-    """
-    Runs the REAL trained fusion model (best_model_fusion.pth). Requires all
-    three modalities: transcript, audio, AND a precomputed acoustic-features
-    .pt file (a 47-length vector, or a dict/sample containing
-    'acoustic_features'), since we have no code to extract acoustic features
-    from raw audio ourselves.
-    """
     if not transcript or not transcript.strip():
         return "Please enter a transcript.", None
     if audio_path is None:
@@ -193,7 +190,7 @@ def predict_fusion(transcript: str, audio_path: str, acoustic_pt_path: str):
             acoustic_tensor, "acoustic_mean", "acoustic_std"
         ).unsqueeze(0).to(DEVICE)
 
-        logit = fusion_model(acoustic_embedding, speech_embedding, text_embedding)
+        logit = get_fusion_model()(acoustic_embedding, speech_embedding, text_embedding)
         prob = torch.sigmoid(logit).item()
 
     pred = int(prob > DECISION_THRESHOLD)
@@ -213,16 +210,11 @@ def predict_text_speech(transcript: str, audio_path: str):
     if audio_path is not None:
         speech_label_str, speech_prob_val = predict_speech(audio_path)
 
-    # If only one modality was provided, fall back to that single result
     if text_prob_val is None:
         return speech_label_str, speech_prob_val, "(no transcript provided)", f"{speech_label_str} ({speech_prob_val})"
     if speech_prob_val is None:
         return text_label_str, text_prob_val, f"{text_label_str} ({text_prob_val})", "(no audio provided)"
 
-    # NOTE: This is a simple average ensemble of the two independently-trained
-    # unimodal models, NOT the original trained fusion (text+speech+acoustic)
-    # model — that checkpoint isn't available (see README). Treat this as an
-    # approximation only.
     combined_prob = round((text_prob_val + speech_prob_val) / 2, 4)
     combined_pred = int(combined_prob > DECISION_THRESHOLD)
 
@@ -238,10 +230,12 @@ with gr.Blocks(title="Neuro Fusion-RAG — Speech & Text Branch") as demo:
     gr.Markdown(
         "# Neuro Fusion-RAG — Speech & Text Branch Demo\n"
         "Text-only and speech-only ablation models from the Pitt Corpus study, plus "
-        "a simple-average ensemble of the two ('Text + Speech' tab). The **real "
-        "trained fusion model** (text+speech+acoustic, 91.43% reported accuracy) is "
+        "a simple-average ensemble of the two ('Text + Speech' tab). The real "
+        "trained fusion model (text+speech+acoustic, 91.43% reported accuracy) is "
         "also loaded and available under 'Text + Speech' → Advanced, for samples "
-        "where you have precomputed acoustic features — see model card below."
+        "where you have precomputed acoustic features — see model card below.\n\n"
+        "_Models load on first use, so the first prediction in each tab may take "
+        "a little longer than the rest._"
     )
 
     with gr.Tab("Text"):
@@ -269,7 +263,7 @@ with gr.Blocks(title="Neuro Fusion-RAG — Speech & Text Branch") as demo:
     with gr.Tab("Text + Speech"):
         gr.Markdown(
             "**Note:** by default this combines the independently-trained "
-            "text-only and speech-only models by simple average — it is *not* "
+            "text-only and speech-only models by simple average — it is not "
             "the original trained fusion model. Provide either or both inputs."
         )
         ts_transcript_in = gr.Textbox(
@@ -291,14 +285,14 @@ with gr.Blocks(title="Neuro Fusion-RAG — Speech & Text Branch") as demo:
 
         with gr.Accordion("Advanced: run the REAL trained fusion model (91.43%)", open=False):
             gr.Markdown(
-                "The original trained fusion checkpoint (`best_model_fusion.pth`) "
-                "**is** included and loaded in this app. It needs a 47-dim acoustic "
+                "The original trained fusion checkpoint (best_model_fusion.pth) "
+                "is included and loaded in this app. It needs a 47-dim acoustic "
                 "feature vector alongside the transcript and audio, but this app "
                 "has no code to extract that vector from raw audio (that "
                 "extraction step wasn't part of the project files). If you have a "
-                "precomputed acoustic-features `.pt` file for this sample (e.g. "
+                "precomputed acoustic-features .pt file for this sample (e.g. "
                 "from the original dataset-prep pipeline, containing a 47-length "
-                "vector or a `{'acoustic_features': ...}` dict), upload it below "
+                "vector or a {'acoustic_features': ...} dict), upload it below "
                 "to get the real fusion model's prediction."
             )
             ts_acoustic_in = gr.File(label="Acoustic features .pt file (47-dim)", type="filepath")
@@ -315,13 +309,16 @@ with gr.Blocks(title="Neuro Fusion-RAG — Speech & Text Branch") as demo:
         "### Model card\n"
         "- Trained on the Pitt Corpus (Cookie Theft, Verbal Fluency, Sentence Construction tasks), "
         "929 samples, evaluated with 4-fold cross-validation plus external ADReSS/Addresso validation.\n"
-        "- Reported test accuracy: **92.14%** (text-only), **80.71%** (speech-only), **91.43%** (fusion).\n"
-        "- The **Text + Speech** tab's default button combines the text-only and speech-only "
+        "- Reported test accuracy: 92.14% (text-only), 80.71% (speech-only), 91.43% (fusion).\n"
+        "- The Text + Speech tab's default button combines the text-only and speech-only "
         "models' predictions by simple averaging.\n"
         "- The full trained fusion model is available under the 'Advanced' section of the "
         "Text + Speech tab for samples with precomputed acoustic features.\n"
-        "- **Not a medical device.** Research demo only — not for clinical use."
+        "- Not a medical device. Research demo only — not for clinical use."
     )
 
-import os
-demo.launch(server_name="0.0.0.0", server_port=int(os.environ.get("PORT", 7860)))
+if __name__ == "__main__":
+    demo.launch(
+        server_name="0.0.0.0",
+        server_port=int(os.environ.get("PORT", 8080)),
+    )
