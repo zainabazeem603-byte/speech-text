@@ -323,4 +323,5 @@ with gr.Blocks(title="Neuro Fusion-RAG — Speech & Text Branch") as demo:
         "- **Not a medical device.** Research demo only — not for clinical use."
     )
 
-demo.launch()
+import os
+demo.launch(server_name="0.0.0.0", server_port=int(os.environ.get("PORT", 7860)))
