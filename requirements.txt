@@ -4,3 +4,6 @@ transformers
 gradio
 librosa
 numpy
+fastapi
+uvicorn[standard]
+python-multipart
