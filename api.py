@@ -23,13 +23,9 @@ exactly match the original training pipeline (the exact pooling/tokenization
 code wasn't included in the project files), so predictions are best-effort.
 """
 
-import os
-import shutil
-import tempfile
-from typing import Optional
-
 import gradio as gr
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
 from src.inference import predict_text, predict_speech, predict_text_speech
@@ -40,6 +36,13 @@ app = FastAPI(
     description="Text-only, speech-only, and combined dementia-signal prediction endpoints.",
     version="1.0.0",
 )
+
+
+@app.get("/", include_in_schema=False)
+def root():
+    # So the bare Railway domain (with no path) doesn't 404 -- send people
+    # straight to the Gradio demo.
+    return RedirectResponse(url="/ui")
 
 
 class TextRequest(BaseModel):
