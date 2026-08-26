@@ -23,6 +23,11 @@ exactly match the original training pipeline (the exact pooling/tokenization
 code wasn't included in the project files), so predictions are best-effort.
 """
 
+import os
+import shutil
+import tempfile
+from typing import Optional
+
 import gradio as gr
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import RedirectResponse
@@ -40,8 +45,6 @@ app = FastAPI(
 
 @app.get("/", include_in_schema=False)
 def root():
-    # So the bare Railway domain (with no path) doesn't 404 -- send people
-    # straight to the Gradio demo.
     return RedirectResponse(url="/ui")
 
 
