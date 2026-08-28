@@ -57,11 +57,9 @@ fusion_model.eval()
 # ---------------------------------------------------------------------------
 # Load embedding backbones
 # ---------------------------------------------------------------------------
-bert_tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
-bert_model = BertModel.from_pretrained("bert-base-uncased").to(DEVICE)
+bert_tokenizer = DistilBertTokenizer.from_pretrained("distilbert-base-uncased")
+bert_model = DistilBertModel.from_pretrained("distilbert-base-uncased").to(DEVICE)
 bert_model.eval()
-bert_model = quantize_dynamic(bert_model, {torch.nn.Linear}, dtype=torch.qint8)
-gc.collect()
 
 wav2vec_processor = Wav2Vec2Processor.from_pretrained("facebook/wav2vec2-base-960h")
 wav2vec_model = Wav2Vec2Model.from_pretrained("facebook/wav2vec2-base-960h").to(DEVICE)
