@@ -10,6 +10,7 @@ See app.py's module docstring for background on the known limitations
 import torch
 import librosa
 from torch.quantization import quantize_dynamic
+import gc
 from transformers import (
     BertTokenizer, BertModel,
     Wav2Vec2Processor, Wav2Vec2Model,
@@ -60,11 +61,13 @@ bert_tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
 bert_model = BertModel.from_pretrained("bert-base-uncased").to(DEVICE)
 bert_model.eval()
 bert_model = quantize_dynamic(bert_model, {torch.nn.Linear}, dtype=torch.qint8)
+gc.collect()
 
 wav2vec_processor = Wav2Vec2Processor.from_pretrained("facebook/wav2vec2-base-960h")
 wav2vec_model = Wav2Vec2Model.from_pretrained("facebook/wav2vec2-base-960h").to(DEVICE)
 wav2vec_model.eval()
 wav2vec_model = quantize_dynamic(wav2vec_model, {torch.nn.Linear}, dtype=torch.qint8)
+gc.collect()
 
 
 def get_text_embedding(transcript: str, pooling_method: str = "mean"):
