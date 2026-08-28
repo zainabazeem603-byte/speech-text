@@ -12,10 +12,9 @@ import librosa
 from torch.quantization import quantize_dynamic
 import gc
 from transformers import (
-    BertTokenizer, BertModel,
+    DistilBertTokenizer, DistilBertModel,
     Wav2Vec2Processor, Wav2Vec2Model,
 )
-
 from src.model import UnimodalClassifier, MultimodalSiameseNetwork
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
