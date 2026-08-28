@@ -9,6 +9,7 @@ See app.py's module docstring for background on the known limitations
 """
 
 import torch
+from torch.quantization import quantize_dynamic
 import librosa
 from transformers import (
     BertTokenizer, BertModel,
@@ -59,10 +60,12 @@ fusion_model.eval()
 bert_tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
 bert_model = BertModel.from_pretrained("bert-base-uncased").to(DEVICE)
 bert_model.eval()
+bert_model = quantize_dynamic(bert_model, {torch.nn.Linear}, dtype=torch.qint8)
 
 wav2vec_processor = Wav2Vec2Processor.from_pretrained("facebook/wav2vec2-base-960h")
 wav2vec_model = Wav2Vec2Model.from_pretrained("facebook/wav2vec2-base-960h").to(DEVICE)
 wav2vec_model.eval()
+wav2vec_model = quantize_dynamic(wav2vec_model, {torch.nn.Linear}, dtype=torch.qint8)
 
 
 def get_text_embedding(transcript: str, pooling_method: str = "mean"):
