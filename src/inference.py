@@ -7,10 +7,9 @@ Speech & Text Branch demo. Used by both:
 See app.py's module docstring for background on the known limitations
 (embedding pooling mismatch, missing acoustic-feature extractor, etc).
 """
-
 import torch
-from torch.quantization import quantize_dynamic
 import librosa
+from torch.quantization import quantize_dynamic
 from transformers import (
     BertTokenizer, BertModel,
     Wav2Vec2Processor, Wav2Vec2Model,
